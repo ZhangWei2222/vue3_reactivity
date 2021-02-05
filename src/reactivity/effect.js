@@ -1,49 +1,67 @@
-export function effect(fn, options = {}) {
-  const effect = createReactiveEffect(fn, options);
+import { TriggerOpTypes } from "./operation";
 
-  // 懒执行 比如computed
+export function effect(fn, options = { lazy: false }) {
+  console.log('effect',fn);
+  
+  // 创建响应式 effect
+  const reactiveEffect = createReactiveEffect(fn, options);
+
   if (!options.lazy) {
-    effect();
+    // 默认执行
+    reactiveEffect();
   }
 
-  return effect;
+  return reactiveEffect;
 }
 
+//
 let uid = 0;
 let activeEffect;
-const effectStack = []; // 栈结构
+const effectStack = [];
 
 function createReactiveEffect(fn, options) {
-  const effect = function reactiveEffect() {
-    // 栈结构不包括当前传进的 effect
-    if (!effectStack.includes(effect)) {
+  // 创建 响应式 effect
+  const reactiveEffect = function () {
+    // 防止不停更改属性导致死循环
+    if (!effectStack.includes(reactiveEffect)) {
       try {
-        effectStack.push(effect);
-        activeEffect = effect;
+        effectStack.push(reactiveEffect);
+        activeEffect = reactiveEffect; // 将当前 effect 存储到 activeEffect
         return fn();
       } finally {
+        // 执行完清空
         effectStack.pop();
         activeEffect = effectStack[effectStack.length - 1];
       }
     }
   };
 
-  effect.options = options;
-  effect.id = uid++;
-  effect.deps = [];
+  reactiveEffect.options = options; // effect 的配置信息
+  reactiveEffect.id = uid++; // effect 的id
+  reactiveEffect.deps = []; // 依赖，触发更新的属性
 
-  return effect;
+  return reactiveEffect;
 }
 
-const targetMap = new WeakMap(); // 用法和map一直，弱引用  不会导致内存泄漏
-export function track(target, type, key) {
-  // 如果当前没有正在执行的effect，则直接返回
-  if (activeEffect == undefined) return;
-  let depsMap = targetMap.get(target); // 根据key来取值
+const targetMap = new WeakMap();
 
+export function track(target, type, key) {
+  console.log('target',target,activeEffect);
+  
+  if (activeEffect === undefined) {
+    return; // 说明取值的属性，不依赖于 effect
+  }
+  /*
+   *      key  		       val(map)
+   * {name : 'chris}   {  name : Set(effect,effect) ， age : Set() }
+   * */
+  // 取值
+  let depsMap = targetMap.get(target);
+  // 不存在构建
   if (!depsMap) {
     targetMap.set(target, (depsMap = new Map()));
   }
+
   let dep = depsMap.get(key);
   if (!dep) {
     depsMap.set(key, (dep = new Set()));
@@ -51,23 +69,50 @@ export function track(target, type, key) {
 
   if (!dep.has(activeEffect)) {
     dep.add(activeEffect);
-    activeEffect.deps.push(dep);
+    activeEffect.deps.push(dep); // 当前 effect 记录 dep
   }
 }
 
-export function trigger(target, type, key, vaulue, oldValue) {
-  // 属性依赖表
+export function trigger(target, type, key, value, oldVal) {
   const depsMap = targetMap.get(target);
-
-  // 没有则直接返回
-  if (!depsMap) return;
   
-  const run = (effects) => {
-    if (effects) {
-      effects.forEach((effect) => effect());
+  // 没有依赖收集，直接返回
+  if (!depsMap) return;
+
+  // 计算属性优先于 effect
+  const effects = new Set();
+  const computedRunners = new Set();
+  const add = (effectsToAdd) => {
+    if (effectsToAdd) {
+      effectsToAdd.forEach((effect) => {
+        if (effect.options.computed) {
+          computedRunners.add(effect);
+        } else {
+          effects.add(effect);
+        }
+      });
     }
   };
-  if (key !== null) run(depsMap.get(key));
 
-  if (type === "add") run(depsMap.get(Array.isArray(target) ? "length" : ""));
+  const run = (effect) => {
+    if (effect.options.scheduler) {
+      effect.options.scheduler();
+    } else {
+      effect();
+    }
+  };
+
+  if (key !== null) {
+    add(depsMap.get(key));
+  }
+
+  if (type === TriggerOpTypes.ADD) {
+    // 对数组新增熟悉会触发 length 对应的依赖
+    let effects = depsMap.get(Array.isArray(target) ? "length" : "");
+    add(effects);
+  }
+
+  computedRunners.forEach(run);
+  console.log('effects',effects)
+  effects.forEach(run);
 }
